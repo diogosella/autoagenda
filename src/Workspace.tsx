@@ -60,6 +60,8 @@ export default function Workspace({
       .catch(() => setKnowledge(undefined));
   }, [page]);
   const [draft, setDraft] = useState('');
+  // The simulator plays a customer writing from this number, as the WhatsApp channel will.
+  const [testPhone, setTestPhone] = useState('(11) 98888-7777');
   const storageKey = 'autoagenda-preview-' + config.shop.id;
   const [messages, setMessages] = useState<ConversationMessage[]>(() => {
     try {
@@ -107,7 +109,7 @@ export default function Workspace({
     try {
       const result = await api<{ message: string; state: ChatState }>('/owner/chat', {
         method: 'POST',
-        body: JSON.stringify({ text, history, state: chatState }),
+        body: JSON.stringify({ text, history, state: chatState, phone: testPhone }),
       });
       setChatState(result.state);
       setMessages([
@@ -190,19 +192,30 @@ export default function Workspace({
           <main className="workspace-main" id="conteudo">
             <div className="page-head">
               <div>
-                <h1>Assistente do WhatsApp</h1>
+                <h1>Atendimento pelo WhatsApp</h1>
                 <p className="page-description">
-                  Entende o pedido, tira dúvidas e reserva o horário. Reservas confirmadas entram
-                  direto na agenda.
+                  Os clientes conversam com o assistente pelo WhatsApp da loja. Use o simulador para
+                  testar as respostas antes de mudar serviços ou regras.
                 </p>
               </div>
+              {config.whatsapp && <span className="chip chip-ok">Respondendo no WhatsApp</span>}
             </div>
             <div className="whatsapp-layout">
               <section className="conversation-preview" aria-labelledby="chat-title">
                 <div className="preview-header">
                   <div>
-                    <h2 id="chat-title">Converse com o assistente</h2>
-                    <p>Veja como ele responde aos seus clientes.</p>
+                    <h2 id="chat-title">Simulador de WhatsApp</h2>
+                    <p>Ferramenta de teste. Reservas confirmadas aqui entram na agenda.</p>
+                    <label className="sim-phone">
+                      Número do cliente simulado
+                      <input
+                        value={testPhone}
+                        onChange={(e) => setTestPhone(e.target.value)}
+                        inputMode="tel"
+                        maxLength={25}
+                        disabled={busy}
+                      />
+                    </label>
                   </div>
                   <button
                     type="button"
@@ -217,7 +230,7 @@ export default function Workspace({
                   {!messages.length ? (
                     <div className="chat-empty">
                       <MessageCircle size={30} aria-hidden="true" />
-                      <h3>Escreva como um cliente escreveria</h3>
+                      <h3>Escreva como um cliente no WhatsApp</h3>
                       <p>Pergunte preços, peça um horário ou tire uma dúvida sobre os serviços.</p>
                       <div className="suggestions">
                         {SUGGESTIONS.map((s) => (

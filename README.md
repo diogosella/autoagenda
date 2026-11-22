@@ -1,145 +1,314 @@
-# Autoagenda — painel da loja
+# Autoagenda
 
-## Conversa contextual
+**Assistente de agendamento com inteligência artificial para estéticas automotivas, oferecido como SaaS.**
 
-A prévia utiliza POST /api/owner/chat, protegido pela mesma autenticação do painel. O servidor interpreta o histórico, valida o catálogo e as regras e monta a resposta com preços e horários reais. O frontend não decide a disponibilidade.
+O cliente da loja escreve pelo WhatsApp em linguagem natural ("quero deixar o carro brilhando sexta à tarde"). O assistente entende o pedido, consulta a agenda real da loja, oferece horários livres com preço e previsão de entrega e reserva o horário após a confirmação do cliente. A loja acompanha tudo em um painel web.
 
-Com OPENAI_API_KEY no .env, a Responses API interpreta o histórico completo, descrições do catálogo, correções e negações com saída estruturada. Sem chave, há um modo local limitado, identificado na interface: ele atualiza serviço, data e período por campos e suporta expressões comuns, mas não substitui compreensão por um modelo. Falhas da API não acionam uma simulação silenciosa.
+| Item                 | Detalhe                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Integrantes**      | Diogo Correa Sela, Luiz Felipe Barbosa, Hugo Santana Raphael                                                                                                                |
+| **Tipo de projeto**  | MVP de SaaS (trabalho prático)                                                                                                                                              |
+| **Stack**            | TypeScript, React 19, Vite, Node.js, Express 5, Zod, Supabase (PostgreSQL), Ollama                                                                                          |
+| **Canal do cliente** | WhatsApp pela API oficial da Meta (Cloud API, webhook em `server/whatsapp.ts`) e Simulador de WhatsApp no painel                                                            |
+| **Testes**           | 84 testes automatizados (Vitest), todos passando                                                                                                                            |
+| **Documentação**     | [`docs/Autoagenda-documentacao.pdf`](docs/Autoagenda-documentacao.pdf), [`docs/whatsapp-setup.md`](docs/whatsapp-setup.md) e [`docs/auditoria-ux.md`](docs/auditoria-ux.md) |
 
-O histórico fica no sessionStorage desta aba (sobrevive ao recarregamento, não é histórico permanente de clientes). Cada mensagem nova registra sua data para preservar o sentido de datas relativas após meia-noite. Nova conversa limpa esse contexto. O limite é 100 mensagens, sem descarte silencioso do início. Mensagens antigas anteriores à atualização não possuem data de referência: inicie uma nova conversa para testar datas relativas.
+## Sumário
 
-### Reserva dentro da conversa
+1. [Problema e público-alvo](#1-problema-e-público-alvo)
+2. [Funcionalidades](#2-funcionalidades)
+3. [Como executar](#3-como-executar)
+4. [Roteiro de teste em 3 minutos](#4-roteiro-de-teste-em-3-minutos)
+5. [Arquitetura](#5-arquitetura)
+6. [Tecnologias](#6-tecnologias)
+7. [Estrutura de pastas](#7-estrutura-de-pastas)
+8. [API](#8-api)
+9. [Técnicas aplicadas](#9-técnicas-aplicadas)
+10. [Testes](#10-testes)
+11. [Segurança e dados](#11-segurança-e-dados)
+12. [Modelo de negócio](#12-modelo-de-negócio)
+13. [Uso de IA no desenvolvimento](#13-uso-de-ia-no-desenvolvimento)
+14. [Limitações e próximos passos](#14-limitações-e-próximos-passos)
 
-O chat leva o cliente até a reserva: o assistente oferece até três horários numerados; o cliente responde com o número, a ordem (“o segundo”) ou o horário (“às 13h”); o assistente pede nome e veículo, mostra o resumo com preço, entrada, entrega prevista e aviso de entrega, e só reserva após um “sim”. “Não” volta às opções; “cancelar” abandona o pedido; pedir outro dia, período ou serviço refaz a consulta mantendo o resto. Um horário livre pedido direto (“polimento sexta às 13h”) pula a lista.
+## 1. Problema e público-alvo
 
-A reserva passa pela mesma validação do agendamento manual (disponibilidade, expediente, preço e duração cotados); um conflito devolve novas opções. O progresso fica num estado (`state`) que o servidor devolve a cada resposta e o navegador guarda junto do histórico; nada nele é confiado sem nova verificação. No WhatsApp, esse estado e o histórico ficarão no servidor, por número de telefone, e a mesma função `chat()` será usada. O telefone vem do próprio WhatsApp; no chat do painel, o assistente pede o telefone com DDD antes do resumo. Depois de um “não”, ao escolher outro horário, nome, veículo e telefone já informados são reaproveitados.
+**Problema.** Pequenas estéticas automotivas agendam pelo WhatsApp, à mão. O dono interrompe o serviço para responder preço e horário, perde clientes que escrevem fora do expediente e corre o risco de marcar dois carros no mesmo horário. Como a loja atende um veículo por vez e cada serviço dura horas, um erro de agenda custa um dia de trabalho.
 
-### Dúvidas do cliente
+**Público-alvo.** Donos de estéticas automotivas pequenas (1 a 3 funcionários), que hoje controlam a agenda em papel, planilha ou na própria conversa do WhatsApp. O cliente final, dono do veículo, só conversa com o assistente.
 
-O assistente também responde perguntas (“como funciona a lavagem?”, “quanto tempo demora?”, “aceitam Pix?”) usando somente o catálogo (descrição, preço, duração), o expediente e o texto **Informações para o assistente**, editável em Atendimento. O modelo recebe os serviços por códigos curtos (S1, S2…), nunca pelos IDs do banco. O servidor confere a resposta: preços que não existem no catálogo, códigos internos ou afirmações de reserva fazem a resposta ser trocada por uma descrição montada a partir do catálogo. Depois da explicação, o serviço fica selecionado para o agendamento; uma pergunta no meio da reserva é respondida e a etapa pendente é repetida. Sem IA, o modo local responde com a descrição do catálogo.
+**Solução.** A loja cadastra serviços, preços, durações e horários no painel. O assistente atende os clientes, tira dúvidas e reserva horários reais. A IA apenas interpreta o texto do cliente: preço, disponibilidade e a confirmação da reserva são sempre decididos pelo servidor e pelo banco de dados.
 
-A prévia não envia mensagens ao WhatsApp. A integração real com o canal continua pendente.
+## 2. Funcionalidades
 
-## Direção atual do produto
+### Atendimento ao cliente (assistente)
 
-A interface web é exclusiva para a loja. O atendimento ao cliente será pelo WhatsApp. A aplicação abre no painel administrativo com agenda, catálogo, área WhatsApp e regras de atendimento. A antiga página pública de agendamento foi removida.
+- **Entende pedidos em linguagem natural**: serviço, dia e período, inclusive correções ("na verdade prefiro lavagem"), negações e datas relativas ("sexta", "semana que vem", "na outra quarta", "uma semana depois").
+- **Oferece horários reais** com preço, horário de entrada e entrega prevista; o cliente escolhe por número ("2"), ordem ("o segundo") ou horário ("às 13h").
+- **Conduz a reserva até o fim**: pede nome e veículo, mostra o resumo e só reserva depois de um "sim". "Não" volta às opções; "cancelar" desiste.
+- **Responde dúvidas** ("como funciona a lavagem?", "aceitam Pix?") usando apenas o catálogo e as informações cadastradas pela loja.
+- **Lista os dias disponíveis** ("quais dias têm horário para polimento?") e, quando um dia está lotado, oferece outro período ou o próximo dia com vaga.
+- **Não inventa dados**: preços, dias de funcionamento e disponibilidade citados pela IA são conferidos pelo servidor e substituídos pelos dados reais quando divergem.
 
-A área WhatsApp possui uma prévia de conversa que consulta o catálogo e a disponibilidade reais e cria reservas na agenda após confirmação. Ela não envia mensagens. Sem chave OpenAI, usa palavras-chave e informa essa condição. A conexão WhatsApp permanece explicitamente desconectada.
+### Painel da loja
 
-**Ainda pendentes:** webhook verificado da Meta, envio pela Cloud API, histórico persistente de conversas, transferência para atendente. As regras podem ser editadas em Atendimento: dias, abertura/fechamento, intervalo, antecedência, horizonte e aviso de entrega. Capacidade permanece 1 veículo, com fuso de Brasília. Para Supabase existente, aplique também a migração 202611210002_settings.sql. Não existe integração WhatsApp ativa nem cobrança de assinatura implementada.
+- **Agenda da semana** com contagem de reservas por dia, próximo atendimento, valor previsto, concluir e cancelar; atualização automática a cada 30 segundos.
+- **Novo agendamento manual** para clientes que ligam ou chegam à loja, usando os mesmos horários livres do assistente.
+- **Catálogo de serviços**: nome, descrição (usada pelo assistente para explicar o serviço), preço, duração e ativação.
+- **Regras de atendimento**: dias, abertura e fechamento, intervalo entre entradas, antecedência mínima, horizonte de reservas, aviso de variação de preço e informações extras (endereço, formas de pagamento).
+- **Atendimento no WhatsApp**: o cliente conversa com o assistente pelo WhatsApp (API oficial da Meta); o telefone da reserva vem do próprio número, sem ser perguntado. Passo a passo de teste em [`docs/whatsapp-setup.md`](docs/whatsapp-setup.md).
+- **Simulador de WhatsApp**: ferramenta de teste que simula um cliente escrevendo para a loja, com a mesma lógica de conversa que atende o WhatsApp.
 
-O painel preserva os serviços e reservas existentes. O backend de reservas e sua proteção contra conflitos continuam disponíveis.
+## 3. Como executar
 
-Plataforma de gestão de agendamentos para estética automotiva, em **React + TypeScript + Supabase**, com uma API Node/Express local. A loja de exemplo é o **Studio Auto**, com um veículo por vez, por padrão segunda a sábado, das 08h às 18h, em `America/Sao_Paulo`.
+### Pré-requisitos
 
-## Executar localmente
+- **Node.js 22.12+** (ou 20.19+) e npm
+- **Ollama** (opcional, para a IA local): https://ollama.com
 
-Requisito: Node.js 22.12+ (ou 24/26) e npm.
+### Passo a passo (Windows PowerShell)
 
 ```powershell
+git clone https://github.com/diogosella/autoagenda.git
+cd autoagenda
 npm install
-Copy-Item .env.example .env
+Copy-Item .env.example .env      # no Linux/macOS: cp .env.example .env
+```
+
+Para usar a IA local, baixe o modelo e defina o provedor no `.env`:
+
+```powershell
+ollama pull qwen3:4b
+```
+
+```dotenv
+AI_PROVIDER=ollama
+```
+
+Inicie o sistema:
+
+```powershell
 npm run dev
 ```
 
-Acesse http://127.0.0.1:5173. API em http://127.0.0.1:3001.
+Abra **http://127.0.0.1:5173**. A API roda em http://127.0.0.1:3001. Nenhuma conta, Docker ou chave de API é necessária: sem Supabase configurado, os dados ficam em `.data/demo.json` com quatro serviços de exemplo.
 
-Sem credenciais, funciona como **demonstração local**, persistindo serviços e reservas em `.data/demo.json`. O painel fica aberto nesse modo, identificado na interface. Não há necessidade de conta, Docker, Supabase ou chave de IA para experimentar o fluxo. Execute apenas uma instância da API no modo JSON; sua exclusão de conflitos é garantida pelo processamento síncrono das gravações dentro desse processo. Para múltiplas instâncias, use Supabase.
+> Sem o Ollama, deixe `AI_PROVIDER` vazio: o assistente funciona em modo por regras (palavras-chave), com entendimento mais limitado. Para recomeçar com a agenda vazia, pare o servidor e apague `.data/demo.json`.
 
-```powershell
-npm test
-npm run build
-npm start
-```
+### Scripts
 
-Após o build, `npm start` serve API e frontend em http://127.0.0.1:3001. `npm run dev` usa recarga automática. Os servidores escutam apenas em loopback; este projeto ainda não é uma implantação pública.
+| Comando         | O que faz                                                 |
+| --------------- | --------------------------------------------------------- |
+| `npm run dev`   | API (com recarga automática) e interface juntas           |
+| `npm test`      | Executa os 84 testes automatizados                        |
+| `npm run build` | Verifica os tipos e gera a interface em `dist/`           |
+| `npm start`     | Serve API e interface compiladas em http://127.0.0.1:3001 |
 
-## O que está implementado
+### Variáveis de ambiente (`.env`)
 
-- Catálogo de serviços com preço em centavos, descrição e duração em blocos de 30 minutos.
-- Agenda manual com data, período e horários que comportam **a duração inteira** até o fechamento.
-- Revisão com preço, entrada, entrega prevista, identificação do cliente/veículo e aceite obrigatório da estimativa.
-- Confirmação com nova validação de disponibilidade no servidor. A chegada exatamente no término de outra reserva é permitida.
-- Proteção contra preço ou duração alterados entre a consulta e a confirmação: o cliente deve revisar novamente.
-- Painel diário, cadastro/edição e ativação/inativação de serviços, conclusão e cancelamento de reservas. Cancelar libera o horário; concluir conserva o histórico e seu intervalo.
-- Preço, nome e duração do serviço são preservados na reserva, independentemente de alterações posteriores no catálogo.
-- Interpretação de linguagem natural, seguida pelo **mesmo fluxo manual de disponibilidade e confirmação**. A interpretação nunca confirma uma reserva.
+| Variável                                                                       | Obrigatória | Descrição                                                                                                   |
+| ------------------------------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                                         | não         | Porta da API (padrão 3001)                                                                                  |
+| `AI_PROVIDER`                                                                  | não         | `ollama` (IA local), `demo` (só regras) ou vazio (OpenAI se houver `OPENAI_API_KEY`; senão, regras)         |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL`                                             | não         | Endereço e modelo do Ollama (padrão `http://127.0.0.1:11434`, `qwen3:4b`)                                   |
+| `WHATSAPP_VERIFY_TOKEN` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` | não         | Ligam o atendimento pelo WhatsApp (Meta Cloud API); veja [`docs/whatsapp-setup.md`](docs/whatsapp-setup.md) |
+| `WHATSAPP_APP_SECRET`                                                          | não         | Chave secreta do app da Meta, usada para conferir a assinatura de cada mensagem                             |
+| `OPENAI_API_KEY` / `OPENAI_MODEL`                                              | não         | Alternativa ao Ollama (padrão `gpt-4o-mini`)                                                                |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`             | não         | As três juntas ativam o banco Supabase e o login do dono da loja                                            |
+| `SHOP_ID`                                                                      | não         | Loja atendida por esta instância                                                                            |
 
-No modo local, `quero fazer um polimento geral sexta à tarde` é interpretado por regras explícitas de palavras-chave — **não é uma chamada a um modelo de IA**. A tela informa essa limitação. Serviços personalizados são reconhecidos pelo nome completo. Pedidos ambíguos ou sem data pedem esclarecimento. Dias da semana significam a próxima ocorrência a partir de amanhã; manhã/tarde se referem ao início do serviço, com tarde a partir das 12h. A entrega pode ocorrer no mesmo dia até as 18h. Não há serviços atravessando dias, feriados, pausas, pagamentos ou notificações nesta versão.
+O `.env` nunca vai para o repositório (está no `.gitignore`). Chaves privadas não devem ter o prefixo `VITE_`.
 
-## Supabase local ou remoto
+### Banco Supabase (opcional)
 
-O mesmo código possui um adaptador Supabase real. O modo JSON é uma alternativa para o primeiro uso, e seus dados **não são migrados automaticamente** para o banco.
-
-### Supabase local
-
-Com Docker e Supabase CLI instalados:
+Com Docker e o Supabase CLI:
 
 ```powershell
 supabase start
-supabase db reset
-supabase status
+supabase db reset     # recria o banco LOCAL com as migrações e o seed
+supabase status       # mostra URL e chaves para o .env
 ```
 
-`db reset` apaga e recria **o banco Supabase local**; use somente no ambiente de desenvolvimento. As migrações e o seed criam a loja e quatro serviços. Copie a URL local, a chave `anon` e a chave `service_role` apresentadas pelo CLI para o `.env`:
-
-```dotenv
-SUPABASE_URL=http://127.0.0.1:54321
-SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-SHOP_ID=10000000-0000-4000-8000-000000000001
-```
-
-Reinicie `npm run dev`. Para um projeto Supabase remoto vazio, execute primeiro `supabase/migrations/202611210001_initial.sql` e depois `supabase/seed.sql` no SQL Editor e use as credenciais desse projeto.
-
-### Conta do responsável
-
-Crie um usuário com e-mail confirmado pelo painel Auth do Supabase (Studio no ambiente local). Vincule seu ID à loja usando o SQL Editor:
+Em um projeto Supabase remoto, execute no SQL Editor `supabase/migrations/202611210001_initial.sql`, `supabase/migrations/202611210002_settings.sql` e `supabase/seed.sql`. Depois crie um usuário em Auth e vincule-o à loja:
 
 ```sql
 insert into public.shop_members(shop_id, user_id)
-values ('10000000-0000-4000-8000-000000000001', 'UUID-REAL-DO-USUARIO');
+values ('10000000-0000-4000-8000-000000000001', 'UUID-DO-USUARIO');
 ```
 
-O painel passa a exigir login por e-mail e senha. A API verifica o JWT com Supabase Auth e a participação na loja para cada operação administrativa. Clientes fazem reservas sem criar conta. A API responde disponibilidade sem nomes, telefones ou veículos de outras pessoas.
+Com Supabase ativo, o painel exige login por e-mail e senha.
 
-RLS está habilitado em todas as tabelas e os clientes `anon`/`authenticated` não têm acesso direto. A API usa a chave `service_role` exclusivamente no servidor. Não prefixe nenhuma chave privada com `VITE_` e não a coloque no frontend ou no Git. A função SQL `book_service` valida catálogo, horário, expediente e orçamento em uma transação. A restrição PostgreSQL `EXCLUDE` bloqueia sobreposições concorrentes por `shop_id`, inclusive entre instâncias diferentes da API.
+## 4. Roteiro de teste em 3 minutos
 
-As tabelas já distinguem lojas por `shop_id`; nesta primeira versão, cada instância seleciona uma loja via `SHOP_ID`. Provisionamento de novas lojas, seleção pública por URL e múltiplos usuários no frontend ficam para a próxima fase SaaS.
+1. Abra **WhatsApp** no menu lateral. No Simulador de WhatsApp, envie:
+   `oi, queria deixar meu carro brilhando de novo, tem horário quinta à tarde?`
+   O assistente entende **Polimento geral** sem a palavra "polimento" e lista horários reais com preço e entrega prevista.
+2. Pergunte `qual a diferença pra proteção de pintura?`: a resposta usa só o catálogo e inclui o aviso de variação de preço.
+3. Responda `2`, depois `joão da silva`, depois `Civic prata`. Confira o resumo e envie `sim`.
+4. Abra **Agenda e serviços**: a reserva aparece na quinta, com a contagem na faixa da semana.
+5. Clique em **Nova conversa** e envie `vocês fazem pintura?`: o assistente informa que o serviço não existe e lista os serviços reais.
+6. Envie `quais dias disponiveis para polimento`: o assistente lista os próximos dias com horário livre.
+7. Em **Agenda e serviços**, clique em **Novo agendamento**: o horário reservado no passo 3 não aparece mais como livre.
 
-## Ativar IA real
+## 5. Arquitetura
 
-No `.env` do servidor:
-
-```dotenv
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-4o-mini
+```mermaid
+flowchart LR
+  WA["Cliente no WhatsApp"] <-->|"webhook + Graph API<br/>(Meta Cloud API)"| ZAP["Canal WhatsApp<br/>server/whatsapp.ts"]
+  PAINEL["Painel da loja<br/>React + Vite"] -->|HTTP + JSON| ROTAS
+  subgraph API["API Express (Node.js)"]
+    ROTAS["Rotas e validação<br/>server/app.ts"] --> CONV["Conversa<br/>server/chat.ts"]
+    ZAP --> CONV
+    CONV --> INT["Interpretação<br/>server/intent.ts"]
+  end
+  ROTAS --> DB[("PostgreSQL no Supabase<br/>ou JSON local")]
+  CONV --> DB
+  INT --> LLM["Ollama qwen3:4b<br/>ou OpenAI"]
 ```
 
-Reinicie a API. A interface passa a indicar **COM IA**. A integração utiliza a Responses API com JSON Schema estrito, valida novamente a resposta com Zod e confere o ID do serviço e a data. São enviados ao modelo o histórico da conversa, o catálogo e o calendário dos próximos dias. Nome e veículo da reserva são coletados pelo servidor e não passam pela interpretação. Evite dados pessoais no pedido em texto livre. Chamadas reais podem gerar custo na conta de API configurada. Em falhas do provedor, o usuário pode continuar manualmente; não há simulação silenciosa de IA real.
+| Camada                    | Responsabilidade                                                                                                                                         | Onde                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **Interface**             | Painel da loja: agenda, catálogo, regras e Simulador de WhatsApp. Não contém regras de negócio; toda ação é uma chamada à API.                           | `src/`                         |
+| **Lógica**                | Rotas e validação (`app.ts`); etapas da conversa e cálculo de horários livres (`chat.ts`); interpretação com IA e conferência da resposta (`intent.ts`). | `server/`                      |
+| **Domínio compartilhado** | Tipos, esquemas Zod, cálculo de horários, fuso de Brasília e regras de atendimento, usados pela interface e pela API.                                    | `shared/`                      |
+| **Armazenamento**         | PostgreSQL (Supabase) em produção ou arquivo JSON na demonstração, com o mesmo contrato de acesso.                                                       | `server/store.ts`, `supabase/` |
 
-## Estrutura
+**Princípio central: "a IA entende, o sistema decide".** O modelo devolve apenas um JSON com serviço, data, período e, para perguntas, uma explicação. O servidor confere tudo antes de usar e é o único que calcula horários, preços e grava reservas. Isso torna seguro usar um modelo pequeno, que às vezes erra.
+
+**Fluxo de uma mensagem:** o cliente escreve → `chat.ts` verifica em que etapa a reserva está → se precisar entender linguagem natural, `intent.ts` consulta a IA e valida a resposta → `chat.ts` calcula os horários livres na agenda → a resposta volta com dados reais → no "sim", a reserva é gravada com nova validação de disponibilidade.
+
+## 6. Tecnologias
+
+| Tecnologia            | Uso                  | Motivo da escolha                                               |
+| --------------------- | -------------------- | --------------------------------------------------------------- |
+| TypeScript            | Todo o projeto       | Tipos compartilhados entre interface e servidor                 |
+| React 19 + Vite       | Painel da loja       | Componentes reutilizáveis e recarga instantânea                 |
+| Node.js + Express 5   | API REST             | Leve, mesma linguagem da interface, fácil de testar             |
+| Zod                   | Validação            | Um esquema valida formulários, requisições e respostas da IA    |
+| Supabase (PostgreSQL) | Banco e autenticação | Login pronto, RLS e restrições de integridade no banco          |
+| Ollama (qwen3:4b)     | IA local             | Sem custo por mensagem e sem enviar dados de clientes para fora |
+| OpenAI (opcional)     | IA na nuvem          | Mesma interface do Ollama, trocada por variável de ambiente     |
+| Vitest                | Testes               | Rápido e integrado ao Vite                                      |
+
+## 7. Estrutura de pastas
 
 ```text
-src/                 Interface React e cliente HTTP
-shared/domain.ts     Tipos, validações, fuso horário e cálculo de intervalos
-server/app.ts        Rotas HTTP, autorização e validação de entrada
-server/store.ts      Adaptadores JSON local / Supabase
-server/intent.ts     Intérprete por regras e integração OpenAI
-supabase/            Configuração local, migração e dados de exemplo
-tests/               Regras de agenda e integração HTTP concorrente
+autoagenda/
+├── src/                    Interface React
+│   ├── App.tsx             Agenda, catálogo, novo agendamento, login
+│   ├── Workspace.tsx       Layout, Simulador de WhatsApp, menu
+│   └── RulesEditor.tsx     Regras de atendimento
+├── server/                 API Express
+│   ├── app.ts              Rotas, autenticação, validação, limites
+│   ├── chat.ts             Etapas da conversa e da reserva
+│   ├── intent.ts           Interpretação (IA ou regras) e conferência
+│   ├── whatsapp.ts         Canal WhatsApp: webhook da Meta e envio de respostas
+│   ├── store.ts            Acesso a dados: JSON local ou Supabase
+│   └── index.ts            Inicialização e aquecimento do Ollama
+├── shared/                 Domínio compartilhado (tipos, Zod, horários)
+├── supabase/               Migrações SQL, seed e configuração local
+├── tests/                  84 testes automatizados (Vitest)
+└── docs/                   Documentação em PDF, guia do WhatsApp e auditoria de UX
 ```
 
-As rotas públicas são `GET /api/config`, `GET /api/services`, `GET /api/availability`, `POST /api/interpret` e `POST /api/bookings`. Rotas administrativas começam em `/api/owner`. O servidor limita tamanho de corpo, valida entradas, restringe origens de navegador e limita operações de escrita por IP/rota. Esses controles são do MVP local; uma implantação pública precisa de TLS, limite distribuído, proteção antiabuso nas reservas e política de retenção de dados.
+## 8. API
 
-## Referências técnicas
+| Método e rota                     | Acesso  | Descrição                                             |
+| --------------------------------- | ------- | ----------------------------------------------------- |
+| `GET /api/config`                 | público | Modo de dados, provedor de IA e loja                  |
+| `GET /api/services`               | público | Serviços ativos                                       |
+| `GET /api/availability`           | público | Horários livres de um serviço em uma data             |
+| `POST /api/bookings`              | público | Cria reserva com validação completa                   |
+| `POST /api/interpret`             | público | Interpreta um pedido em texto                         |
+| `GET /api/whatsapp/webhook`       | Meta    | Verificação do webhook (token de verificação)         |
+| `POST /api/whatsapp/webhook`      | Meta    | Mensagens do cliente (assinatura HMAC conferida)      |
+| `POST /api/owner/chat`            | dono    | Mensagem do Simulador de WhatsApp (etapas da reserva) |
+| `GET /api/owner`                  | dono    | Serviços e reservas                                   |
+| `POST /api/owner/services`        | dono    | Cria ou edita serviço                                 |
+| `PATCH /api/owner/bookings/:id`   | dono    | Conclui ou cancela reserva                            |
+| `GET` / `PUT /api/owner/settings` | dono    | Lê e salva as regras de atendimento                   |
 
-- [Intervalos e restrições de exclusão no PostgreSQL](https://www.postgresql.org/docs/17/rangetypes.html#RANGETYPES-CONSTRAINT)
-- [Row Level Security no Supabase](https://supabase.com/docs/guides/database/postgres/row-level-security)
-- [Structured Outputs na API OpenAI](https://developers.openai.com/api/docs/guides/structured-outputs)
+## 9. Técnicas aplicadas
 
-Nenhum repositório remoto ou publicação é necessário nesta etapa. `.env`, `.data`, dependências e build estão no `.gitignore`; `package-lock.json` deve ser versionado junto ao código quando você criar o repositório.
+| Técnica                          | Onde aparece                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Arquitetura em camadas           | Interface, lógica e dados separados; a interface nunca acessa banco ou IA                                        |
+| API REST com JSON                | `server/app.ts`                                                                                                  |
+| Validação nos dois lados         | Esquemas Zod em `shared/` + função SQL `book_service` no banco                                                   |
+| Integridade no banco             | `EXCLUDE USING gist` impede reservas sobrepostas, mesmo simultâneas                                              |
+| Controle de acesso               | RLS no Supabase; cada dono acessa só a própria loja                                                              |
+| IA com saída estruturada         | JSON Schema obrigatório + conferência de serviço, data, preço e dias                                             |
+| Máquina de estados               | `server/chat.ts`: pedido → horário → nome → veículo → confirmação → reservado                                    |
+| Testes automatizados             | 84 testes, incluindo conversas completas até a reserva, também pelo WhatsApp                                     |
+| Auditoria de UX e acessibilidade | WCAG 2.2 e heurísticas de Nielsen, com medições antes e depois em [`docs/auditoria-ux.md`](docs/auditoria-ux.md) |
+| Design responsivo                | Painel verificado em 1366×768 (notebook) e 390×844 (celular)                                                     |
 
-### IA local com Ollama
+## 10. Testes
 
-Execute `ollama pull qwen3:4b` e mantenha o Ollama aberto. Configure no `.env`: `AI_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://127.0.0.1:11434` e `OLLAMA_MODEL=qwen3:4b`. Reinicie `npm run dev`. O painel mostra “IA local · Ollama”. Não é necessária chave de API. O histórico e o catálogo são enviados ao modelo local; o servidor valida a resposta e consulta a agenda. Falhas são exibidas sem substituir silenciosamente a IA por regras. Ao iniciar, a API carrega o modelo na memória (`keep_alive` de 30 minutos), e o terminal mostra se o Ollama respondeu. Esta prévia não envia WhatsApp.
+```powershell
+npm test
+```
+
+| Arquivo                                          | Cobre                                                                                                           |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `scheduling.test.ts`                             | Horários livres, expediente, sobreposição, datas relativas                                                      |
+| `chat-booking.test.ts`                           | Conversas completas até a reserva, telefone, dia lotado, dias disponíveis                                       |
+| `intent-ai.test.ts`                              | Respostas simuladas da IA: códigos, preços e dias inventados, datas passadas                                    |
+| `chat-regressions.test.ts`                       | Correções, negações e mudanças de ideia no meio da conversa                                                     |
+| `api.test.ts`                                    | Rotas HTTP, reservas simultâneas (só uma é aceita), cotação desatualizada, regras salvas, origens bloqueadas    |
+| `conversation.test.ts`                           | Contexto mantido quando o cliente responde só a data ou troca o serviço                                         |
+| `settings.test.ts`                               | Regras personalizadas: domingo aberto, antecedência, horizonte, horários inválidos                              |
+| `ollama.test.ts`, `unsupported-services.test.ts` | Chamada ao Ollama e pedidos de serviços que a loja não oferece                                                  |
+| `whatsapp.test.ts`                               | Webhook da Meta: verificação, assinatura, reserva completa, conversas separadas, mensagens repetidas, 9º dígito |
+
+## 11. Segurança e dados
+
+- Nenhuma senha ou chave está no código; `.env` e `.data/` estão no `.gitignore`.
+- A chave `service_role` do Supabase é usada só no servidor; RLS habilitado em todas as tabelas.
+- A API valida tamanho e formato de toda entrada, restringe origens do navegador e limita requisições de escrita por IP.
+- Com o Ollama, a interpretação das mensagens acontece na máquina da loja.
+- Webhook do WhatsApp: cada mensagem tem a assinatura da Meta (`X-Hub-Signature-256`) conferida com a chave secreta do app; pelo túnel, só essa rota é acessível.
+- Dados guardados por reserva: nome, telefone e veículo do cliente, além do preço e da duração confirmados.
+
+## 12. Modelo de negócio
+
+Assinatura mensal por loja; cada loja tem conta, catálogo e agenda próprios (o banco já separa os dados por `shop_id`).
+
+| Plano      | Inclui                                                                                           | Preço sugerido |
+| ---------- | ------------------------------------------------------------------------------------------------ | -------------- |
+| Agenda     | Painel, agenda, catálogo e agendamento manual                                                    | R$ 79/mês      |
+| Assistente | Tudo do Agenda + atendimento automático no WhatsApp com IA (limite mensal de mensagens incluído) | R$ 199/mês     |
+
+14 dias grátis. Um único polimento (R$ 650) paga mais de três meses do plano Assistente. Valores propostos pelo grupo para o trabalho.
+
+## 13. Uso de IA no desenvolvimento
+
+A definição da ideia e do público-alvo foi feita pelo grupo, sem IA. ChatGPT, Codex (OpenAI) e Claude (Anthropic) ajudaram na programação, nos testes, na investigação de erros, na auditoria de UX e na documentação. Toda sugestão foi testada antes de ser aceita.
+
+Exemplos concretos:
+
+- A revisão de código feita com IA encontrou o bug em que "uma semana depois" apagava a data correta entendida pelo modelo; o caso virou teste.
+- O modelo local exibia IDs internos do banco para o cliente; a correção passou a enviar códigos curtos (S1, S2) ao modelo e a bloquear no servidor qualquer resposta com IDs.
+- O modelo inventava dias de funcionamento; o servidor passou a conferir dias, horários e disponibilidade com as regras da loja.
+- No teste com o WhatsApp real, a resposta não chegava ao celular; os registros de cada etapa sugeridos pela IA mostraram que a Meta aceitava o envio e bloqueava a entrega por regra de país (erro 130497).
+
+Detalhes na seção 8 de [`docs/Autoagenda-documentacao.pdf`](docs/Autoagenda-documentacao.pdf).
+
+## 14. Limitações e próximos passos
+
+**Limitações atuais**
+
+- O WhatsApp foi testado com a Meta real usando o número de teste gratuito, que é americano (+1 555). A mensagem do cliente chega, a IA responde em cerca de 5 s e a Meta aceita o envio, mas a entrega para números +55 é bloqueada pela política antifraude da Meta para mensagens de outros países ao Brasil (erro 130497). Em produção, cada loja conecta o próprio número brasileiro de WhatsApp Business e o bloqueio não se aplica; o código não muda, só o `.env`. Na demonstração, o atendimento é mostrado no Simulador de WhatsApp.
+
+  ![Log do teste com a Meta](docs/whatsapp-teste-meta.png)
+
+- No modo de demonstração (JSON), execute uma única instância da API; para várias instâncias, use o Supabase.
+- Preço e duração são únicos por serviço; o aviso ao cliente informa que o valor pode variar conforme o porte e o estado do veículo.
+- O sistema roda localmente (servidores escutam só em 127.0.0.1); a publicação na internet não faz parte deste MVP.
+
+**Próximos passos**
+
+1. Número brasileiro próprio da loja no WhatsApp Business, com token permanente (libera a entrega para clientes +55).
+2. Preço e duração por porte do veículo, com a IA classificando o modelo do carro.
+3. Histórico de conversas no painel e transferência para um atendente humano.
+4. Publicação na internet, cadastro de novas lojas e cobrança da assinatura.
+5. IA hospedada em produção: Qwen3 32B em um provedor compatível com a API da OpenAI (por exemplo, Groq), com custo estimado em cerca de US$ 0,50 por mil mensagens. O Ollama fica para o desenvolvimento; se o provedor cair, o assistente usa o modo por regras. Nome e telefone do cliente são ocultados antes do envio, e cada plano tem um limite mensal de mensagens.

@@ -25,9 +25,29 @@ import {
   addDays,
 } from '../shared/domain.ts';
 import { interpret } from './intent.ts';
+import { handleWebhook, validSignature, whatsappConfig, whatsappEnabled } from './whatsapp.ts';
 export const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '128kb' }));
+app.use(
+  express.json({
+    limit: '128kb',
+    // The raw bytes are kept to check the WhatsApp webhook signature.
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
+// A tunnel (cloudflared, ngrok) exposes this API to the internet so Meta can reach the webhook.
+// Requests that came through it carry forwarding headers and may reach ONLY the webhook.
+const WEBHOOK = '/api/whatsapp/webhook';
+app.use((req, res, next) => {
+  const external = req.get('x-forwarded-for') || req.get('cf-connecting-ip');
+  if (external && req.path !== WEBHOOK) {
+    res.status(404).end();
+    return;
+  }
+  next();
+});
 // Loopback-only API; refuse browser requests from an unrelated origin.
 app.use('/api', (req, res, next) => {
   const origin = req.get('origin');
@@ -47,7 +67,7 @@ app.use('/api', (req, res, next) => {
 });
 const attempts = new Map<string, { count: number; reset: number }>();
 app.use('/api', (req, res, next) => {
-  if (req.method === 'GET') return next();
+  if (req.method === 'GET' || req.originalUrl.startsWith(WEBHOOK)) return next();
   const key = `${req.ip}:${req.path}`;
   const now = Date.now();
   if (attempts.size > 1000) for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k);
@@ -93,8 +113,36 @@ app.get('/api/config', async (_req, res) => {
     },
     mode: db ? 'supabase' : 'demo',
     ai: aiProvider(),
+    whatsapp: whatsappEnabled(),
     auth: db ? { url: process.env.SUPABASE_URL, anonKey: process.env.SUPABASE_ANON_KEY } : null,
   });
+});
+// WhatsApp Cloud API webhook: Meta checks the URL once with GET, then POSTs each message.
+app.get(WEBHOOK, (req, res) => {
+  const { verifyToken } = whatsappConfig();
+  if (
+    verifyToken &&
+    req.query['hub.mode'] === 'subscribe' &&
+    req.query['hub.verify_token'] === verifyToken
+  ) {
+    res
+      .status(200)
+      .type('text/plain')
+      .send(String(req.query['hub.challenge'] ?? ''));
+    return;
+  }
+  res.status(403).end();
+});
+app.post(WEBHOOK, (req, res) => {
+  const raw = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!validSignature(raw, req.get('x-hub-signature-256'), whatsappConfig().appSecret)) {
+    console.error('WhatsApp: assinatura inválida; mensagem descartada.');
+    res.status(401).end();
+    return;
+  }
+  // Meta expects a quick 200; the reply is sent afterwards through the Graph API.
+  res.status(200).end();
+  void handleWebhook(req.body).catch((error) => console.error('WhatsApp:', error.message));
 });
 app.get('/api/services', async (_req, res) =>
   res.json((await getServices()).filter((s) => s.active)),
@@ -142,14 +190,16 @@ app.post('/api/interpret', async (req, res) => {
   );
 });
 app.post('/api/owner/chat', owner, async (req, res) => {
-  const { text, history, state } = z
+  const { text, history, state, phone } = z
     .object({
       text: z.string().trim().min(1).max(500),
       history: conversationSchema.default([]),
       state: chatStateSchema.default(chatStateSchema.parse({})),
+      /** Number the WhatsApp simulator pretends the customer writes from. */
+      phone: z.string().trim().max(25).optional(),
     })
     .parse(req.body);
-  res.json(await chat(text, history, state));
+  res.json(await chat(text, history, state, phone));
 });
 app.get('/api/owner', owner, async (_req, res) =>
   res.json({ services: await getServices(), bookings: await getBookings() }),

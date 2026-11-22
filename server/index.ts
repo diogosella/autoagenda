@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { app } from './app.ts';
 import { aiProvider } from './ai.ts';
+import { whatsappConfig, whatsappEnabled } from './whatsapp.ts';
 import express from 'express';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -12,6 +13,11 @@ if (existsSync(dist)) {
 app.listen(Number(process.env.PORT || 3001), '127.0.0.1', () => {
   console.log(`Autoagenda API: http://127.0.0.1:${process.env.PORT || 3001}`);
   console.log(`IA: ${aiProvider()}`);
+  console.log(
+    whatsappEnabled()
+      ? `WhatsApp: ativo; webhook em /api/whatsapp/webhook${whatsappConfig().appSecret ? '' : ' (defina WHATSAPP_APP_SECRET para conferir a assinatura da Meta)'}`
+      : 'WhatsApp: não configurado; use o simulador do painel.',
+  );
   if (aiProvider() === 'ollama') void warmUpOllama();
 });
 

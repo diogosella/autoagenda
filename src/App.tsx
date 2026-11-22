@@ -365,13 +365,16 @@ function OwnerPage({
               <div className="empty owner-empty">
                 <CalendarDays size={32} aria-hidden="true" />
                 <h3>Nenhum agendamento neste dia</h3>
-                <p>Registre um cliente que ligou ou deixe o assistente preencher a agenda.</p>
+                <p>
+                  Registre um cliente que ligou ou deixe o assistente preencher a agenda pelo
+                  WhatsApp.
+                </p>
                 <div className="empty-actions">
                   <button className="primary" onClick={() => setBooking(true)}>
                     <CalendarPlus size={16} aria-hidden="true" /> Novo agendamento
                   </button>
                   <button className="secondary" onClick={() => go('whatsapp')}>
-                    <MessageCircle size={16} aria-hidden="true" /> Abrir o assistente
+                    <MessageCircle size={16} aria-hidden="true" /> Testar no simulador
                   </button>
                   {nextAfter && (
                     <button

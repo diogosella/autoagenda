@@ -3,6 +3,7 @@ export type Config = {
   shop: { id: string; name: string };
   mode: 'demo' | 'supabase';
   ai: 'demo' | 'openai' | 'ollama';
+  whatsapp?: boolean;
   auth: { url: string; anonKey: string } | null;
 };
 let auth: SupabaseClient | null = null;

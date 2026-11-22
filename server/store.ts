@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
+import type { ChatState, ConversationMessage } from '../shared/conversation.ts';
 import {
   type Booking,
   type BookingInput,
@@ -36,7 +37,18 @@ export const db = configured.every(Boolean)
       auth: { persistSession: false, autoRefreshToken: false },
     })
   : null;
-type State = { services: Service[]; bookings: Booking[]; settings?: Settings };
+/** A WhatsApp conversation, kept per customer phone number. */
+export type StoredConversation = {
+  history: ConversationMessage[];
+  state: ChatState;
+  updated_at: string;
+};
+type State = {
+  services: Service[];
+  bookings: Booking[];
+  settings?: Settings;
+  conversations?: Record<string, StoredConversation>;
+};
 export class LocalStore {
   state: State;
   constructor(public path: string) {
@@ -186,5 +198,29 @@ export async function saveSettings(settings: Settings) {
     return;
   }
   const { error } = await db!.from('shops').update({ settings }).eq('id', shopId);
+  checked(null, error);
+}
+
+export async function getConversation(phone: string): Promise<StoredConversation | null> {
+  if (local) return local.state.conversations?.[phone] ?? null;
+  const { data, error } = await db!
+    .from('whatsapp_conversations')
+    .select('history, state, updated_at')
+    .eq('shop_id', shopId)
+    .eq('phone', phone)
+    .maybeSingle();
+  return checked(data as StoredConversation | null, error);
+}
+export async function saveConversation(phone: string, conversation: StoredConversation) {
+  if (local) {
+    local.save({
+      ...local.state,
+      conversations: { ...local.state.conversations, [phone]: conversation },
+    });
+    return;
+  }
+  const { error } = await db!
+    .from('whatsapp_conversations')
+    .upsert({ shop_id: shopId, phone, ...conversation }, { onConflict: 'shop_id,phone' });
   checked(null, error);
 }
